@@ -11,7 +11,7 @@ Add `raw_ping` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:raw_ping, "~> 0.1.0"}
+    {:raw_ping, "~> 0.2.0"}
   ]
 end
 ```
@@ -22,6 +22,7 @@ end
 # Single ping - returns RTT in milliseconds
 {:ok, rtt} = RawPing.ping("8.8.8.8")
 {:ok, rtt} = RawPing.ping({8, 8, 8, 8})
+{:ok, rtt} = RawPing.ping([8, 8, 8, 8])  # list format also works
 
 # With options
 {:ok, rtt} = RawPing.ping("8.8.8.8", timeout: 2000)

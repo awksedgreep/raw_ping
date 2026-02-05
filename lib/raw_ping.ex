@@ -41,7 +41,7 @@ defmodule RawPing do
   @default_count 1
   @default_payload_size 56
 
-  @type ip_address :: String.t() | :inet.ip_address()
+  @type ip_address :: String.t() | :inet.ip_address() | [integer()]
   @type ping_result :: {:ok, float()} | {:error, term()}
   @type ping_stats :: %{
           min: float() | nil,
@@ -197,26 +197,34 @@ defmodule RawPing do
   end
 
   defp calculate_stats(results) do
-    rtts =
-      results
-      |> Enum.filter(&match?({:ok, _}, &1))
-      |> Enum.map(fn {:ok, rtt} -> rtt end)
+    # Single-pass extraction and stats calculation
+    {rtts, min, max, sum, success_count, total_count} =
+      Enum.reduce(results, {[], nil, nil, 0.0, 0, 0}, fn
+        {:ok, rtt}, {rtts, min, max, sum, success, total} ->
+          new_min = if min == nil, do: rtt, else: min(min, rtt)
+          new_max = if max == nil, do: rtt, else: max(max, rtt)
+          {[rtt | rtts], new_min, new_max, sum + rtt, success + 1, total + 1}
 
-    success_count = length(rtts)
-    total_count = length(results)
+        {:error, _}, {rtts, min, max, sum, success, total} ->
+          {rtts, min, max, sum, success, total + 1}
+      end)
 
     %{
-      min: if(rtts != [], do: Enum.min(rtts), else: nil),
-      max: if(rtts != [], do: Enum.max(rtts), else: nil),
-      avg: if(rtts != [], do: Enum.sum(rtts) / length(rtts), else: nil),
+      min: min,
+      max: max,
+      avg: if(success_count > 0, do: sum / success_count, else: nil),
       success_rate: if(total_count > 0, do: success_count / total_count, else: 0.0),
       success_count: success_count,
       failure_count: total_count - success_count,
-      rtts: rtts
+      rtts: Enum.reverse(rtts)
     }
   end
 
   defp parse_ip(ip) when is_tuple(ip), do: {:ok, ip}
+
+  defp parse_ip([a, b, c, d] = _ip)
+       when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d),
+       do: {:ok, {a, b, c, d}}
 
   defp parse_ip(ip) when is_binary(ip) do
     case :inet.parse_address(String.to_charlist(ip)) do
@@ -227,4 +235,5 @@ defmodule RawPing do
 
   defp to_string_ip(ip) when is_binary(ip), do: ip
   defp to_string_ip(ip) when is_tuple(ip), do: :inet.ntoa(ip) |> to_string()
+  defp to_string_ip([a, b, c, d]), do: "#{a}.#{b}.#{c}.#{d}"
 end

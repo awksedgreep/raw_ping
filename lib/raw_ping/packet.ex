@@ -39,38 +39,29 @@ defmodule RawPing.Packet do
   """
   @spec build_echo_request(non_neg_integer(), non_neg_integer(), non_neg_integer()) :: binary()
   def build_echo_request(id, seq, payload_size \\ 56) do
-    type = @icmp_echo_request
-    code = 0
-
-    # Generate payload (timestamp + padding)
     timestamp = System.system_time(:microsecond)
-    timestamp_bytes = <<timestamp::64>>
     padding_size = max(0, payload_size - 8)
-    padding = :binary.copy(<<0>>, padding_size)
-    payload = timestamp_bytes <> padding
 
-    # Build packet without checksum first
-    packet_without_checksum = <<
-      type::8,
-      code::8,
+    # Build packet with zero checksum placeholder
+    # Optimization: zero padding contributes nothing to checksum, so we only
+    # checksum the 16-byte header+timestamp regardless of payload size
+    packet = <<
+      @icmp_echo_request::8,
+      0::8,
       0::16,
       id::16,
       seq::16,
-      payload::binary
+      timestamp::64,
+      0::size(padding_size)-unit(8)
     >>
 
-    # Calculate checksum
-    checksum = calculate_checksum(packet_without_checksum)
+    # Calculate checksum over header+timestamp only (first 16 bytes)
+    <<header::binary-size(16), _rest::binary>> = packet
+    checksum = calculate_checksum(header)
 
-    # Build final packet with checksum
-    <<
-      type::8,
-      code::8,
-      checksum::16,
-      id::16,
-      seq::16,
-      payload::binary
-    >>
+    # Insert checksum at bytes 2-3
+    <<pre::binary-size(2), _::16, post::binary>> = packet
+    <<pre::binary, checksum::16, post::binary>>
   end
 
   @doc """
