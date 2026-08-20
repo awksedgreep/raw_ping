@@ -69,7 +69,9 @@ defmodule RawPing.UnprivilegedTest do
     @tag :integration
     test "ping_stats works over the datagram path" do
       if dgram_available?() do
-        assert {:ok, stats} = RawPing.ping_stats({127, 0, 0, 1}, mode: :dgram, count: 3, timeout: 2000)
+        assert {:ok, stats} =
+                 RawPing.ping_stats({127, 0, 0, 1}, mode: :dgram, count: 3, timeout: 2000)
+
         assert stats.success_count == 3
         assert stats.success_rate == 1.0
         assert is_float(stats.avg)
