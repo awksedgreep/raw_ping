@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-20
+
+### Added
+- **Hostnames are resolved.** `ping/2`, `ping_stats/2` and `ping_batch/2` accept a
+  hostname, resolved via `:inet.getaddr/2` when the value is not already a literal
+  address. Monitoring targets are usually named rather than numbered, and requiring
+  literals meant re-pinning every target by hand whenever a host moved. IPv4 only:
+  the socket family is fixed at `:inet`, so IPv6 targets remain out of scope.
+
+### Changed
+- A name that does not resolve returns `:inet.getaddr/2`'s error, normally
+  `{:error, :nxdomain}`, instead of `{:error, :invalid_ip}` — which described a
+  syntactically valid hostname as malformed and pointed at the wrong problem.
+
+### Fixed
+- **ICMP sockets open in minimal container images.** The protocol is passed as the
+  number `1` rather than the atom `:icmp`. Erlang resolves protocol atoms through
+  the system protocol database, and slim images routinely omit `/etc/protocols` (it
+  ships in Debian's `netbase`), where `:icmp` failed with
+  `{:invalid, {:protocol, :icmp}}` — an error that reads like a bad address or a
+  missing capability and is neither.
+
 ## [0.3.0] - 2026-08-20
 
 ### Added

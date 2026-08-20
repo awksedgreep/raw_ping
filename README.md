@@ -11,7 +11,7 @@ Add `raw_ping` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:raw_ping, "~> 0.2.0"}
+    {:raw_ping, "~> 0.3"}
   ]
 end
 ```
@@ -45,6 +45,23 @@ results = RawPing.ping_batch(["8.8.8.8", "1.1.1.1", "192.168.1.1"], timeout: 100
 | `:count` | 1 | Number of pings (for `ping_stats/2`) |
 | `:payload_size` | 56 | ICMP payload size in bytes |
 | `:max_concurrency` | 50 | Max concurrent pings (for `ping_batch/2`) |
+
+## Hostnames
+
+Targets may be hostnames or literal addresses:
+
+```elixir
+RawPing.ping("example.com")
+RawPing.ping("8.8.8.8")
+RawPing.ping({8, 8, 8, 8})
+```
+
+Names are resolved per call, so a target that starts pointing somewhere else is
+followed rather than pinned to whatever it resolved to at startup. A name that
+does not resolve returns `{:error, :nxdomain}`.
+
+IPv4 only: the socket family is fixed at `:inet`, so IPv6 targets are not yet
+supported.
 
 ## Privileges
 
@@ -156,7 +173,9 @@ This library was created as an alternative to `gen_icmp` which:
 
 ## How It Works
 
-1. Opens a raw ICMP socket via `:socket.open(:inet, :raw, :icmp)`
+1. Opens an ICMP socket, preferring the unprivileged datagram interface and
+   falling back to a raw socket (`:socket.open/3`, with `IPPROTO_ICMP` given
+   numerically so it does not depend on the system protocol database)
 2. Builds ICMP echo request packets with proper checksums
 3. Sends to target and receives replies with timeout handling
 4. Parses ICMP echo replies, filtering by ID/sequence to handle concurrent pings

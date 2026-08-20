@@ -275,10 +275,22 @@ defmodule RawPing do
        when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d),
        do: {:ok, {a, b, c, d}}
 
+  # A literal address first, then DNS. Resolution happens per call: the OS
+  # resolver caches, and a monitoring target that starts pointing somewhere else
+  # should be followed rather than pinned to whatever it resolved to at startup.
+  #
+  # A name that does not resolve returns :inet.getaddr/2's own error — usually
+  # :nxdomain — rather than :invalid_ip, which described a perfectly valid
+  # hostname as malformed and sent you looking in the wrong place.
+  #
+  # IPv4 only for now: the socket family is fixed at :inet in RawPing.Socket, so
+  # returning a v6 address here would open a v4 socket against it.
   defp parse_ip(ip) when is_binary(ip) do
-    case :inet.parse_address(String.to_charlist(ip)) do
+    charlist = String.to_charlist(ip)
+
+    case :inet.parse_address(charlist) do
       {:ok, ip_tuple} -> {:ok, ip_tuple}
-      {:error, _} -> {:error, :invalid_ip}
+      {:error, _} -> :inet.getaddr(charlist, :inet)
     end
   end
 
