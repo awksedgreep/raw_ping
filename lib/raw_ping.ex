@@ -23,14 +23,23 @@ defmodule RawPing do
 
   ## Privileges
 
-  Raw ICMP sockets typically require elevated privileges. Options:
-  - Run as root/sudo
-  - Set CAP_NET_RAW capability on the BEAM: `setcap cap_net_raw+ep /path/to/beam.smp`
-  - Use a setuid wrapper
+  Most hosts need none. By default an unprivileged ICMP datagram socket is used,
+  falling back to a raw socket only where that is unavailable:
+
+      RawPing.socket_mode()
+      #=> {:ok, :dgram}   # no privileges required
+      #=> {:ok, :raw}     # fell back; needed root or CAP_NET_RAW
+
+  On Linux the datagram path is gated by `net.ipv4.ping_group_range`, which must
+  include the process's GID; many distributions ship it wide open. Where it is
+  restricted, the raw path still needs root, `CAP_NET_RAW` on the BEAM
+  (`setcap cap_net_raw+ep /path/to/beam.smp`), or a container granted `NET_RAW`.
+
+  See `RawPing.Socket` for the trade-offs and the platform differences.
 
   ## How It Works
 
-  Uses Erlang's `:socket` module to open a raw ICMP socket, builds ICMP echo
+  Uses Erlang's `:socket` module to open an ICMP socket, builds ICMP echo
   request packets manually, sends them, and parses the echo replies to calculate
   round-trip time.
   """
@@ -60,6 +69,8 @@ defmodule RawPing do
 
     * `:timeout` - Timeout in milliseconds (default: #{@default_timeout})
     * `:payload_size` - Size of ICMP payload in bytes (default: #{@default_payload_size})
+    * `:mode` - Socket mode, `:auto` (default), `:dgram`, or `:raw`. See
+      `RawPing.Socket` for what each requires.
 
   ## Examples
 
@@ -73,8 +84,8 @@ defmodule RawPing do
     payload_size = Keyword.get(opts, :payload_size, @default_payload_size)
 
     with {:ok, ip} <- parse_ip(host),
-         {:ok, socket} <- Socket.open(),
-         result <- do_ping(socket, ip, timeout, payload_size) do
+         {:ok, socket, mode} <- Socket.open(socket_opts(opts)),
+         result <- do_ping(socket, mode, ip, timeout, payload_size) do
       Socket.close(socket)
       result
     else
@@ -90,6 +101,8 @@ defmodule RawPing do
     * `:count` - Number of pings to send (default: #{@default_count})
     * `:timeout` - Timeout per ping in milliseconds (default: #{@default_timeout})
     * `:payload_size` - Size of ICMP payload in bytes (default: #{@default_payload_size})
+    * `:mode` - Socket mode, `:auto` (default), `:dgram`, or `:raw`. See
+      `RawPing.Socket` for what each requires.
 
   ## Examples
 
@@ -103,14 +116,37 @@ defmodule RawPing do
     payload_size = Keyword.get(opts, :payload_size, @default_payload_size)
 
     with {:ok, ip} <- parse_ip(host),
-         {:ok, socket} <- Socket.open() do
+         {:ok, socket, mode} <- Socket.open(socket_opts(opts)) do
       results =
         Enum.map(1..count, fn seq ->
-          do_ping(socket, ip, timeout, payload_size, seq)
+          do_ping(socket, mode, ip, timeout, payload_size, seq)
         end)
 
       Socket.close(socket)
       {:ok, calculate_stats(results)}
+    end
+  end
+
+  @doc """
+  Report which socket mode is available to this process.
+
+  Opens a socket using the same negotiation as `ping/2` and closes it
+  immediately. `:dgram` means ICMP works with no elevated privileges; `:raw`
+  means it fell back to a raw socket, which required root or `CAP_NET_RAW`.
+
+  Useful for confirming a deployment is running unprivileged.
+
+      {:ok, :dgram} = RawPing.socket_mode()
+  """
+  @spec socket_mode(keyword()) :: {:ok, RawPing.Socket.mode()} | {:error, term()}
+  def socket_mode(opts \\ []) do
+    case Socket.open(socket_opts(opts)) do
+      {:ok, socket, mode} ->
+        Socket.close(socket)
+        {:ok, mode}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -147,7 +183,9 @@ defmodule RawPing do
 
   # Private functions
 
-  defp do_ping(socket, ip, timeout, payload_size, seq \\ 1) do
+  defp socket_opts(opts), do: Keyword.take(opts, [:mode])
+
+  defp do_ping(socket, mode, ip, timeout, payload_size, seq \\ 1) do
     id = :rand.uniform(65535)
     packet = Packet.build_echo_request(id, seq, payload_size)
     send_time = System.monotonic_time(:microsecond)
@@ -155,7 +193,7 @@ defmodule RawPing do
 
     case Socket.send(socket, packet, ip) do
       :ok ->
-        recv_loop(socket, id, seq, send_time, deadline)
+        recv_loop(socket, mode, id, seq, send_time, deadline)
 
       {:error, reason} ->
         {:error, reason}
@@ -163,7 +201,7 @@ defmodule RawPing do
   end
 
   # Keep receiving until we get our reply or timeout
-  defp recv_loop(socket, expected_id, expected_seq, send_time, deadline) do
+  defp recv_loop(socket, mode, expected_id, expected_seq, send_time, deadline) do
     now = System.monotonic_time(:microsecond)
     remaining_ms = div(deadline - now, 1000)
 
@@ -172,19 +210,20 @@ defmodule RawPing do
     else
       case Socket.recv(socket, remaining_ms) do
         {:ok, reply} ->
-          case Packet.parse_echo_reply(reply) do
-            {:ok, ^expected_id, ^expected_seq, _ttl} ->
-              recv_time = System.monotonic_time(:microsecond)
-              rtt_ms = (recv_time - send_time) / 1000.0
-              {:ok, rtt_ms}
-
-            {:ok, _other_id, _other_seq, _ttl} ->
-              # Got someone else's reply, keep waiting
-              recv_loop(socket, expected_id, expected_seq, send_time, deadline)
+          case Packet.parse_echo_reply(reply, mode) do
+            {:ok, id, seq, _ttl} ->
+              if reply_matches?(mode, id, seq, expected_id, expected_seq) do
+                recv_time = System.monotonic_time(:microsecond)
+                rtt_ms = (recv_time - send_time) / 1000.0
+                {:ok, rtt_ms}
+              else
+                # Got someone else's reply, keep waiting
+                recv_loop(socket, mode, expected_id, expected_seq, send_time, deadline)
+              end
 
             {:error, _reason} ->
               # Malformed packet, keep waiting
-              recv_loop(socket, expected_id, expected_seq, send_time, deadline)
+              recv_loop(socket, mode, expected_id, expected_seq, send_time, deadline)
           end
 
         {:error, :timeout} ->
@@ -195,6 +234,16 @@ defmodule RawPing do
       end
     end
   end
+
+  # On datagram sockets the kernel substitutes its own identifier, so the id we
+  # wrote never comes back and matching on it would reject every reply. The
+  # sequence number is still ours, and each ping owns its socket, so sequence
+  # alone identifies the reply. Raw sockets see every ICMP packet on the host,
+  # so they keep the stricter check.
+  defp reply_matches?(:dgram, _id, seq, _expected_id, expected_seq), do: seq == expected_seq
+
+  defp reply_matches?(:raw, id, seq, expected_id, expected_seq),
+    do: id == expected_id and seq == expected_seq
 
   defp calculate_stats(results) do
     # Single-pass extraction and stats calculation

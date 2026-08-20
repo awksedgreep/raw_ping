@@ -5,15 +5,15 @@ defmodule RawPing.SocketTest do
 
   @moduletag :privileged
 
-  describe "open/0" do
+  describe "open/1" do
     test "opens a socket successfully" do
-      assert {:ok, socket} = Socket.open()
+      assert {:ok, socket, _mode} = Socket.open()
       assert :ok = Socket.close(socket)
     end
 
     test "can open multiple sockets" do
-      assert {:ok, s1} = Socket.open()
-      assert {:ok, s2} = Socket.open()
+      assert {:ok, s1, _} = Socket.open()
+      assert {:ok, s2, _} = Socket.open()
 
       Socket.close(s1)
       Socket.close(s2)
@@ -22,12 +22,12 @@ defmodule RawPing.SocketTest do
 
   describe "close/1" do
     test "closes socket successfully" do
-      {:ok, socket} = Socket.open()
+      {:ok, socket, _mode} = Socket.open()
       assert :ok = Socket.close(socket)
     end
 
     test "returns error for already closed socket" do
-      {:ok, socket} = Socket.open()
+      {:ok, socket, _mode} = Socket.open()
       Socket.close(socket)
 
       # Second close should return error
@@ -37,7 +37,7 @@ defmodule RawPing.SocketTest do
 
   describe "send/3" do
     test "sends packet to valid destination" do
-      {:ok, socket} = Socket.open()
+      {:ok, socket, _mode} = Socket.open()
 
       # Build a minimal ICMP packet
       packet = RawPing.Packet.build_echo_request(1, 1, 8)
@@ -51,7 +51,7 @@ defmodule RawPing.SocketTest do
 
   describe "recv/2" do
     test "times out when no packet arrives" do
-      {:ok, socket} = Socket.open()
+      {:ok, socket, _mode} = Socket.open()
 
       # Don't send anything, just wait
       start = System.monotonic_time(:millisecond)
@@ -66,7 +66,7 @@ defmodule RawPing.SocketTest do
     end
 
     test "receives packet after send" do
-      {:ok, socket} = Socket.open()
+      {:ok, socket, _mode} = Socket.open()
 
       # Send ping to localhost
       packet = RawPing.Packet.build_echo_request(12345, 1, 8)

@@ -48,14 +48,40 @@ results = RawPing.ping_batch(["8.8.8.8", "1.1.1.1", "192.168.1.1"], timeout: 100
 
 ## Privileges
 
-Raw ICMP sockets require elevated privileges. Options:
+**Most hosts need none.** By default RawPing opens an unprivileged ICMP datagram
+socket (`SOCK_DGRAM`/`IPPROTO_ICMP`), falling back to a raw socket only if that
+is unavailable.
+
+Check which interface you got:
+
+```elixir
+RawPing.socket_mode()
+#=> {:ok, :dgram}   # unprivileged
+#=> {:ok, :raw}     # fell back; needed root or CAP_NET_RAW
+```
+
+On Linux, datagram ICMP is gated by `net.ipv4.ping_group_range`, which must
+include the running process's GID. Many distributions already ship it wide open:
+
+```bash
+$ cat /proc/sys/net/ipv4/ping_group_range
+0	2147483647          # any GID may use unprivileged ICMP
+```
+
+If it is restrictive, either widen it — no runtime capability required:
+
+```bash
+sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+```
+
+…or grant the raw-socket path a privilege, as before:
 
 1. **Run as root** (development/testing)
    ```bash
    sudo mix run -e 'RawPing.ping("8.8.8.8") |> IO.inspect'
    ```
 
-2. **Set CAP_NET_RAW capability** (Linux production)
+2. **Set CAP_NET_RAW capability** (Linux)
    ```bash
    sudo setcap cap_net_raw+ep /path/to/beam.smp
    ```
@@ -66,6 +92,26 @@ Raw ICMP sockets require elevated privileges. Options:
      capabilities:
        add: ["NET_RAW"]
    ```
+
+Note that a **rootless container sharing the host network namespace cannot
+obtain `CAP_NET_RAW` at all** — that namespace is owned by the initial user
+namespace, so the capability has no force there. In that deployment shape the
+datagram path is the only way ICMP works.
+
+### Platform differences
+
+The two platforms behave differently on datagram sockets. RawPing handles both
+by inspecting the reply rather than assuming a format:
+
+| | Linux | macOS/BSD |
+|---|---|---|
+| IP header on receive | stripped | included |
+| ICMP identifier | rewritten by kernel | preserved |
+| TTL available | no (`nil`) | yes |
+
+Because Linux rewrites the identifier, replies from a datagram socket are
+matched on **sequence**. Raw sockets keep the stricter id-and-sequence match,
+since they see every ICMP packet on the host.
 
 ## Why Not gen_icmp?
 

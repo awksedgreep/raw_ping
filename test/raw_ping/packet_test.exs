@@ -146,6 +146,99 @@ defmodule RawPing.PacketTest do
     end
   end
 
+  describe "parse_echo_reply/2 in :dgram mode" do
+    test "parses a reply that carries no IP header" do
+      icmp_reply = <<0::8, 0::8, 0::16, 4242::16, 3::16, "payload"::binary>>
+
+      assert {:ok, 4242, 3, nil} = Packet.parse_echo_reply(icmp_reply, :dgram)
+    end
+
+    test "accepts a minimal 8-byte reply in either mode" do
+      # Regression guard: the old parser required 28 bytes because it always
+      # expected an IP header. On Linux a datagram echo reply is just the 8-byte
+      # ICMP header, which that rule discarded as malformed.
+      icmp_reply = <<0::8, 0::8, 0::16, 1::16, 1::16>>
+      assert byte_size(icmp_reply) == 8
+
+      assert {:ok, 1, 1, nil} = Packet.parse_echo_reply(icmp_reply, :dgram)
+      assert {:ok, 1, 1, nil} = Packet.parse_echo_reply(icmp_reply, :raw)
+    end
+
+    test "detects an IP header regardless of the mode it is told" do
+      # macOS delivers the IP header on datagram sockets; Linux does not. The
+      # parser must follow the bytes, not the mode label.
+      ip_header = <<0x45::8, 0::8, 0::16, 0::16, 0::16, 64::8, 1::8, 0::16, 0::32, 0::32>>
+      icmp_reply = <<0::8, 0::8, 0::16, 4242::16, 7::16, 0::64>>
+
+      assert {:ok, 4242, 7, 64} = Packet.parse_echo_reply(ip_header <> icmp_reply, :dgram)
+      assert {:ok, 4242, 7, 64} = Packet.parse_echo_reply(ip_header <> icmp_reply, :raw)
+    end
+
+    test "reports TTL as nil since the kernel strips the IP header" do
+      icmp_reply = <<0::8, 0::8, 0::16, 7::16, 9::16, 0::64>>
+
+      assert {:ok, _id, _seq, nil} = Packet.parse_echo_reply(icmp_reply, :dgram)
+    end
+
+    test "rejects a reply shorter than the ICMP header" do
+      assert {:error, :malformed_packet} = Packet.parse_echo_reply(<<0, 0, 0>>, :dgram)
+    end
+
+    test "returns error for non-echo-reply type" do
+      icmp = <<3::8, 0::8, 0::16, 0::16, 0::16>>
+
+      assert {:error, {:unexpected_icmp_type, 3}} = Packet.parse_echo_reply(icmp, :dgram)
+    end
+
+    test "does not misread the ICMP type byte as an IP header" do
+      # In raw mode byte 0 is version/IHL; in dgram mode it is the ICMP type.
+      # Parsing a datagram reply as raw would compute a bogus header length.
+      icmp_reply = <<0::8, 0::8, 0::16, 555::16, 2::16, 0::128>>
+
+      assert {:ok, 555, 2, nil} = Packet.parse_echo_reply(icmp_reply, :dgram)
+    end
+
+    test "parses a real Linux datagram reply" do
+      # Captured from an unprivileged SOCK_DGRAM ICMP socket on Debian 13:
+      # no IP header, 16 bytes, and the kernel replaced our id 4242 with 1.
+      linux = Base.decode16!("0000eee2000100074142434445464748", case: :lower)
+
+      assert byte_size(linux) == 16
+      assert {:ok, 1, 7, nil} = Packet.parse_echo_reply(linux, :dgram)
+    end
+
+    test "parses a real macOS datagram reply" do
+      # Same socket type on Darwin: IP header included and id 4242 preserved.
+      darwin =
+        Base.decode16!(
+          "4500100081e40000400100007f0000017f0000010000cbaf109200070006597f1485b5ac",
+          case: :lower
+        )
+
+      assert {:ok, 4242, 7, 64} = Packet.parse_echo_reply(darwin, :dgram)
+    end
+
+    test "sequence survives on both platforms, which is what matching relies on" do
+      linux = Base.decode16!("0000eee2000100074142434445464748", case: :lower)
+
+      darwin =
+        Base.decode16!(
+          "4500100081e40000400100007f0000017f0000010000cbaf109200070006597f1485b5ac",
+          case: :lower
+        )
+
+      assert {:ok, _, 7, _} = Packet.parse_echo_reply(linux, :dgram)
+      assert {:ok, _, 7, _} = Packet.parse_echo_reply(darwin, :dgram)
+    end
+
+    test "defaults to :raw when no mode is given" do
+      ip_header = <<0x45::8, 0::8, 0::16, 0::16, 0::16, 64::8, 1::8, 0::16, 0::32, 0::32>>
+      icmp_reply = <<0::8, 0::8, 0::16, 11::16, 22::16>>
+
+      assert {:ok, 11, 22, 64} = Packet.parse_echo_reply(ip_header <> icmp_reply)
+    end
+  end
+
   describe "calculate_checksum/1" do
     test "returns 0 for all-ones input" do
       # One's complement of all 1s should be 0

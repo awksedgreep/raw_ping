@@ -67,39 +67,70 @@ defmodule RawPing.Packet do
   @doc """
   Parse an ICMP echo reply packet.
 
-  The input includes the IP header (20 bytes typically) followed by the ICMP packet.
+  Accepts input with or without a leading IP header, detecting which it got.
+  Whether the kernel includes the IP header is a property of the **host**, not
+  of the socket type: on Linux a datagram ICMP socket strips it, while on
+  macOS/BSD the same socket delivers it intact. Assuming either one breaks on
+  the other platform, so this inspects the data instead.
+
+  When an IP header is present, TTL comes from it. When it is absent, TTL is
+  returned as `nil` — recovering it would need `IP_RECVTTL` ancillary data.
+
+  The `mode` argument is accepted for symmetry with `RawPing.Socket.open/1` and
+  does not affect parsing.
+
+  Note that Linux substitutes its own value for the identifier on datagram
+  sockets, so the returned `id` may not be the one passed to
+  `build_echo_request/3`. Match on sequence when reading from a datagram socket.
 
   Returns `{:ok, id, seq, ttl}` or `{:error, reason}`.
   """
-  @spec parse_echo_reply(binary()) :: {:ok, non_neg_integer(), non_neg_integer(), non_neg_integer()} | {:error, term()}
-  def parse_echo_reply(data) when byte_size(data) < 28 do
+  @spec parse_echo_reply(binary(), RawPing.Socket.mode()) ::
+          {:ok, non_neg_integer(), non_neg_integer(), non_neg_integer() | nil} | {:error, term()}
+  def parse_echo_reply(data, mode \\ :raw)
+
+  # 8 bytes is the ICMP header, the smallest thing that could be a valid reply.
+  def parse_echo_reply(data, _mode) when byte_size(data) < 8 do
     {:error, :malformed_packet}
   end
 
-  def parse_echo_reply(<<version_ihl::8, _rest::binary>> = data) do
+  def parse_echo_reply(data, _mode) do
+    case split_ip_header(data) do
+      {:ok, icmp_data, ttl} -> parse_icmp(icmp_data, ttl)
+      :error -> {:error, :malformed_packet}
+    end
+  end
+
+  # An IPv4 header opens with version 4 in the high nibble (0x4_). An ICMP echo
+  # reply opens with type 0, and every ICMP type we care about is small, so the
+  # two cannot be confused in practice.
+  defp split_ip_header(<<version_ihl::8, _rest::binary>> = data)
+       when version_ihl >>> 4 == 4 do
     ihl = version_ihl &&& 0x0F
     ip_header_length = ihl * 4
 
-    # Ensure we have enough data for IP header + at least 8 bytes of ICMP
-    if byte_size(data) < ip_header_length + 8 do
-      {:error, :malformed_packet}
-    else
+    # A valid IPv4 header is at least 5 words, and the ICMP message needs 8 more
+    if ihl >= 5 and byte_size(data) >= ip_header_length + 8 do
       # Extract TTL from byte 8 of IP header
       <<_::binary-size(8), ttl::8, _::binary>> = data
+      {:ok, binary_part(data, ip_header_length, byte_size(data) - ip_header_length), ttl}
+    else
+      :error
+    end
+  end
 
-      # Extract ICMP portion after IP header
-      icmp_data = binary_part(data, ip_header_length, byte_size(data) - ip_header_length)
+  defp split_ip_header(data), do: {:ok, data, nil}
 
-      case icmp_data do
-        <<@icmp_echo_reply::8, 0::8, _checksum::16, id::16, seq::16, _payload::binary>> ->
-          {:ok, id, seq, ttl}
+  defp parse_icmp(icmp_data, ttl) do
+    case icmp_data do
+      <<@icmp_echo_reply::8, 0::8, _checksum::16, id::16, seq::16, _payload::binary>> ->
+        {:ok, id, seq, ttl}
 
-        <<type::8, _::binary>> ->
-          {:error, {:unexpected_icmp_type, type}}
+      <<type::8, _::binary>> ->
+        {:error, {:unexpected_icmp_type, type}}
 
-        _ ->
-          {:error, :malformed_icmp}
-      end
+      _ ->
+        {:error, :malformed_icmp}
     end
   end
 
