@@ -98,6 +98,37 @@ obtain `CAP_NET_RAW` at all** — that namespace is owned by the initial user
 namespace, so the capability has no force there. In that deployment shape the
 datagram path is the only way ICMP works.
 
+### When neither interface is available
+
+If the datagram path is forbidden *and* the raw path lacks privileges, every call
+returns a clean error rather than crashing:
+
+```elixir
+RawPing.socket_mode()    #=> {:error, :permission_denied}
+RawPing.ping("8.8.8.8")  #=> {:error, :permission_denied}
+RawPing.ping_stats(...)  #=> {:error, :permission_denied}
+```
+
+**Check for this at startup rather than per-ping.** A monitoring tool that treats
+every error as "host unreachable" will report *all* of its targets as down, and
+the real cause — that it cannot open a socket at all — looks identical to a total
+outage. That is a bad page to receive at 3am.
+
+```elixir
+case RawPing.socket_mode() do
+  {:ok, mode} ->
+    Logger.info("ICMP available via #{mode} socket")
+
+  {:error, reason} ->
+    # Loud, and distinct from "the hosts are down"
+    Logger.error("ICMP unavailable: #{inspect(reason)}. Check net.ipv4.ping_group_range, "
+                 <> "or grant CAP_NET_RAW.")
+end
+```
+
+This is most likely to bite in a rootless container where `ping_group_range` has
+been tightened, since `CAP_NET_RAW` is unobtainable there as a fallback.
+
 ### Platform differences
 
 The two platforms behave differently on datagram sockets. RawPing handles both
