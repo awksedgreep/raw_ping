@@ -62,8 +62,16 @@ defmodule RawPing.Socket do
     end
   end
 
+  # IPPROTO_ICMP. Passed as a number rather than the atom `:icmp` on purpose:
+  # Erlang resolves protocol atoms through the system protocol database, and
+  # minimal container images routinely omit /etc/protocols (it ships in Debian's
+  # `netbase`, which slim variants leave out). There, `:icmp` fails with
+  # `{:invalid, {:protocol, :icmp}}` — a confusing error, since nothing is wrong
+  # with the address or the permissions. The number is universal.
+  @ipproto_icmp 1
+
   defp open_mode(mode) do
-    case :socket.open(:inet, mode, :icmp) do
+    case :socket.open(:inet, mode, @ipproto_icmp) do
       {:ok, socket} ->
         # Set receive buffer size for better performance
         :socket.setopt(socket, {:socket, :rcvbuf}, 65536)
